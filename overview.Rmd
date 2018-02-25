@@ -1,0 +1,411 @@
+---
+title: "Stochastic processes Homework 1"
+author: "Olga Lazareva"
+date: "10/31/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+##### 1. Assume a Dirichlet process (DP) prior, DP(M,G0(·)), for distributions G on X. Show that for any (measurable) disjoint subsets B1 and B2 of X , Corr(G(B1), G(B2)) is negative.
+
+Let's consider space $X = (B_1,B_2,(B_1 \cup B_2)^c)$, where $B_1 = (-\infty,\tau_1]$  $B_2 = (\tau_1,\tau_2]$ and thus using proprieties of Beta distribution we can derive following:
+$$E(P(B_1)) = E(F(\tau_1)) = \frac{MG(\tau_1)}{MG(\tau_1)+M(1-G(\tau_1))}= G(\tau_1)$$
+$$E(P(B_2)) = E(F(\tau_2)) = G(\tau_2)$$
+$$E(F(\tau_1)F(\tau_2)) = \frac{MG(\tau_1)G(\tau_2)}{1+M}$$
+Hense
+$$cov(F(\tau_1),F(\tau_2)) = \frac{MG(\tau_1)G(\tau_2)}{1+M} - G(\tau_1)G(\tau_2) = \frac{- G(\tau_1)G(\tau_2)}{1+M}$$ 
+Since $G(\cdot)$ is strickly possitive (as well as M) then we can state that covariance is negative.
+Given that $cor(P(B_1),P(B_2)) = \frac{cov(B_1,B_2)}{\sigma(B_1)\sigma(B_2)}$ where denumerator by definition is positive then we can state that $cor(P(B_1),P(B_2))$ is negative.
+
+##### Is the negative correlation for random probabilities induced by the DP prior a restriction?
+I would consider this as a restriction since this property means that the topology of the underlying space is not considered by the Dirichlet process in its mass assignment. Thus we can't expect that masses assigned to nearby places can increase or decrease together.
+
+##### 2. Consider a DP(M,G0) prior over the space of distributions G on R, with G0 = N (0, 1). Use both Ferguson’s original definition and Sethuraman’s constructive definition to generate (multiple) prior realizations from the DP(M,N(0,1)) for fixed M with values ranging from small to large. In addition to prior c.d.f. realizations, obtain, for each value of M, the corresponding prior distribution of the mean functional and for the variance functional.
+Let's srart with Ferguson’s original definition: "Let A be a $\sigma$-field of subsets of a set X, and let $\alpha$ be a finite nonnull measure on (X, A). A Dirichlet process P with parameter $\alpha$, denote by $D(\alpha)$, if for all positive integers k and every measurable partition $A_1,A_2,...,A_k$ of X, the random vector $(P(A_1),...,P(A_k))$ has a k-dimensional Dirichlet distribution with parameter $(\alpha(A_1),...,\alpha(A_k))$". And here is the code to perform the simulation:
+```{r libraries, include=FALSE}
+require(Compositional)
+require(MCMCpack)
+library(distr)
+library(coda)
+```
+
+```{r}
+sim_dir = function(n,M){
+  d = 15
+  x = seq(-4,4,length= d)
+  y = c()
+  y[1] = pnorm(x[1])
+  for (i in 2:d) y[i] = pnorm(x[i])-pnorm(x[(i-1)])
+  y = c(y,1 -pnorm(x[d]))
+  param = M*y
+  s.d = rdirichlet(n,param)
+  draw = apply(t(s.d),2,cumsum)
+  return(draw)
+}
+```
+
+Now let's do multiple prior realizations with M = {0.5,1,10,50}
+```{r}
+xx = c(seq(-4,4,length = 15),5)
+M = c(0.5,1,10,50)
+par(mfrow = c(2,2))
+for (m in M){
+  sim = sim_dir(10,m)
+  matplot(xx,sim,type = "b", main = paste("Simulation with M =",m))
+  curve(pnorm(x),add = T,lwd = 4)
+}
+```
+As at can be seen from the plots, with increasing scale parameter we can get closer to the center measure $G_0 = N(0,1)$.
+Let's compare empirical mean with the theoretical one $E(P) = G(\cdot)$
+
+```{r}
+par(mfrow = c(2,2))
+for (m in M){
+  matplot(xx,rowMeans(sim_dir(10,m)),type = "b", main = paste("Simulation with M =",m))
+  curve(pnorm(x),add = T, col = 'red',type = "l")
+}
+
+```
+
+We can observe, that with increasing M the empirical mean is getting closer to $G_0 = N(0,1)$.
+
+Now lets compute variance of the realizations. As we know from proprities of moments of Dirichlet process $var(P(A))= \frac{G(A)G(A^c)}{M+1}$ and thus we expect variance to decrease with increasing M:
+```{r}
+par(mfrow = c(2,2))
+for (m in M){
+  draw = sim_dir(10,m)
+  vars = sapply(1:length(xx),function(i)var(draw[i,]))
+  plot(xx,vars,type = "b", main = paste("Simulation with M =",m),ylim = c(0,0.18))
+  curve(pnorm(x)*(1-pnorm(x))/(m+1),add = T, col = 'red',type = "l")
+}
+```
+
+This behavior fully meets our prior expectations: with increasing M we get samples closer to $G_0$ with smaller variance.
+
+**Sethuraman’s constructive definition**
+Let's see if we can replicate the same result with Sethuraman definition. The code is written in a little bit tricky way since I was trying to write it as general as possible in order to use it in the next exercise
+```{r}
+cdf_sample = function(emp_cdf, n=1e3) {
+  emp_cdf@r(n)
+}
+
+dp = function(M, G0, n=1e3) { # we need fairly big n in order to make approximation to +oo
+  
+  s = cdf_sample(G0,n)        # step 1: draw from G0
+  V = rbeta(n,1,M)           # step 2: draw from beta(1,M)
+  w = c(V[1], rep(NA,n-1))   # step 3: compute weights
+  w[2:n] = sapply(2:n, function(i) V[i] * prod(1 - V[1:(i-1)]))
+
+  # return the sampled function F which can be itself sampled 
+  # this F is a probability mass function where each s[i] has mass w[i]
+  function (size=1e3) {
+    sample(s, size, prob=w, replace=TRUE)
+  }
+}
+g0 = function(n) rnorm(n, 0, 1)    # pdf of prior guess
+G0 = DiscreteDistribution(g0(1e2)) # make its cdf
+
+par(mfrow = c(2,2))
+M = c(1,10,20,50)
+xs = seq(-3,3,len=15)
+for (m in M){
+  runs  = 10
+  sim_sb = matrix(nrow=length(xs), ncol=runs)
+  for(i in 1:runs) {
+    dpF = dp(m, G0, n=1e3)  
+    sim_sb[,i] <- ecdf(dpF())(xs)    # just keeping values of cdf(xs), not the object
+  }
+  matplot(xs,sim_sb,type = "b", main = paste("Simulation with M =",m))
+  curve(pnorm(x),add = T,lwd = 4)
+}
+```
+
+Mean estimation:
+```{r}
+par(mfrow = c(2,2))
+for (m in M){
+  runs  = 10
+  sim_sb = matrix(nrow=length(xs), ncol=runs)
+  for(i in 1:runs) {
+    dpF = dp(m, G0, n=1e3)  
+    sim_sb[,i] = ecdf(dpF())(xs)    # just keeping values of cdf(xx), not the object
+  }
+  matplot(xs,rowMeans(sim_sb),type = "b", main = paste("Simulation with M =",m))
+  curve(pnorm(x),add = T, col = 'red',type = "l")
+}
+
+```
+
+Variance estimation:
+```{r}
+par(mfrow = c(2,2))
+for (m in M){
+  runs  = 10
+  sim_sb = matrix(nrow=length(xs), ncol=runs)
+  for(i in 1:runs) {
+    dpF = dp(m, G0, n=1e3)  
+    sim_sb[,i] = ecdf(dpF())(xs)    # just keeping values of cdf(xx), not the object
+  }
+  vars = sapply(1:length(xs),function(i)var(sim_sb[i,]))
+  plot(xs,vars,type = "b", main = paste("Simulation with M =",m),ylim = c(0,0.18))
+  curve(pnorm(x)*(1-pnorm(x))/(m+1),add = T, col = 'red',type = "l")
+}
+```
+
+The next step is to perform simulation from $G|M \sim DP(M,N(0,1))$ where $M \sim Gamma(3,3)$
+
+```{r}
+xx = c(seq(-4,4,length = 20))
+runs  = 30
+sim_sb = matrix(nrow=length(xs), ncol=runs)
+for(i in 1:runs) {
+  M = rgamma(1,3,3)
+  dpF = dp(M, G0, n=1e3)  
+  sim_sb[,i] = ecdf(dpF())(xs)    # just keeping values of cdf(xx), not the object
+}
+matplot(xs,sim_sb,type = "b")
+curve(pnorm(x),add = T, col = 'black',type = "l",lwd = 4)
+
+matplot(xs,rowMeans(sim_sb),type = "b")
+curve(pnorm(x),add = T, col = 'red',type = "l")
+```
+
+##### 3.Posterior inference for one-sample problem using DP
+Firstly let's prepare all the parameters and functions. We will need a function to sample from mixture of normals:
+
+```{r}
+rmnorm = function(N){
+  components = sample(1:3,prob=c(0.5,0.3,0.2),size=N,replace=TRUE)
+  mus = c(2.5,0.5,1.5)
+  sds = c(0.5,0.7,2)
+  samples = rnorm(N,mean=mus[components],sd=sds[components])
+  return(samples)
+}
+```
+
+Let's do a quike check of the mixture of normals sampler
+```{r}
+truth = function(x)(.5*dnorm(x,2.5,0.5) + .3*dnorm(x,0.5,0.7) + .2*dnorm(x,1.5,2))
+x = seq(-20,20,.1)
+plot(density(rmnorm(1000)),main="Density Estimate of the Mixture Model",lwd=2)
+curve(truth,col="red",lwd=2,add = T)
+legend("topleft",c("True Density","Estimated Density"),col=c("red","black"),lwd=2)
+```
+
+In order to do posterior inference we will use theorem that claims the following:
+
+If $X=X_1,X_2,…,X_n∼F$ and $F∼DP(M,G_0)$, the posterior $\pi|X$ is given by $DP(M+n,\bar{F_n})$ where
+$\bar{F_n} = \frac{n}{n+M}F_n + \frac{M}{n+M}G_0$
+```{r}
+dp_posterior <- function(M, G0, X) {
+  n <- length(X)
+  F_n <- DiscreteDistribution(X) # compute empirical cdf(very heavy object, have to pay attention on support of input)
+  F_bar <- n/(n+M) * F_n + M/(n+M) * G0
+  dp(M+n, F_bar)
+}
+#true data generating functions:
+f1 = function(x) pnorm(x,0,1) 
+f2 = function(x) (.5*pnorm(x,2.5,0.5) + .3*pnorm(x,0.5,0.7) + .2*pnorm(x,1.5,2))
+
+#functions to plot the results
+result = function(y_hat,true_func,M,n,true_cdf){
+  xs = seq(-3,3,len=15)
+  plot(xs, true_func(xs), type="n", ylim=c(-.1,1.1), col="blue", lwd=2, ylab="", xlab="",main =paste("Simulation with M =",M,"and n =",n))
+  
+  # compute & plot 95% credible interval of the posterior
+  crebible_int <- apply(y_hat, 1, function(row) HPDinterval(as.mcmc(row), prob=0.95))
+  polygon(c(rev(xs), xs), c(rev(crebible_int[1,]), 
+                                crebible_int[2,]), col = 'grey90')    
+  
+  # plot the prior cdf
+  points(xs, true_cdf(xs), type="l", col="blue", lwd=2)
+  
+  # plot mean estimate of the posterior
+  means <- apply(y_hat, 1, mean)
+  points(xs, means, type="l", col="red", lwd=2)                  
+  
+  # plot true data generator
+  points(xs, true_func(xs), type="l", col="darkgreen", lwd=2)
+  legend("topleft",c("prior","posterior mean", "truth"), 
+         col=c("blue","red","darkgreen"), lwd=2, bty = "n") 
+
+}
+```
+
+We start with data coming from N(0,1) and plot results for 4 configurations (excluding configurations with n = 2000 for now). As $G_0$ we are going to use N(1,3) for the first try (an arbitary choice)
+```{r}
+N = c(20,200)
+M = c(5,100)
+true_cdf = function(x) pnorm(x,1,3)
+g0 <- function(n) rnorm(n, 1, 3)    # the prior guess (in pdf format)
+G0 <- DiscreteDistribution(g0(1e2)) # the prior guess (in cdf format)
+
+
+xs = seq(-3,3,len=15)
+par(mfrow = c(2,2))
+for (n in N){
+  data = rnorm(n,0,1)
+  for (m in M){
+    runs  = 10
+    y_hat = matrix(nrow=length(xs), ncol=runs)
+    for(i in 1:runs) {
+      Fpost = dp_posterior(m, G0, data)
+      y_hat[,i] = ecdf(Fpost())(xs)    # just keeping values of cdf(xs), not the object
+    }
+    result(y_hat,f1,m,n,true_cdf)
+  }
+}
+```
+
+From the experiment, we can conclude that big M is pushing posterior mean to the prior distribution $G_0$ while a small value of M lets us do noninformative inference which is letting us explore true data generating distribution. 
+Also, with big enough dataset (n >> M) we can approach empirical CDF with frequentist solution:
+
+```{r}
+data = rnorm(2000,0,1) 
+par(mfrow = c(1,2))
+for (m in M){
+  runs  = 5
+  y_hat = matrix(nrow=length(xs), ncol=runs)
+  for(i in 1:runs) {
+    Fpost = dp_posterior(m, G0, data)
+    y_hat[,i] = ecdf(Fpost())(xs)    # just keeping values of cdf(xs), not the object
+  }
+  result(y_hat,f1,m,2000,true_cdf)
+}
+
+```
+
+As it was said, large enough n let us fit the data with a very small uncertainty even if scaling parameter is big and $G_0$ is quite far from the data distribution.
+
+Now let's see if we are able to confirm conclusions above with data coming from the mixture of normals:
+```{r}
+true_cdf = function(x) pnorm(x,1,3)
+g0 <- function(n) rnorm(n, 1, 3)    # the prior guess (in pdf format)
+G0 <- DiscreteDistribution(g0(2e2)) # the prior guess (in cdf format)
+
+
+xs = seq(-3,3,len=15)
+par(mfrow = c(2,2))
+for (n in N){
+  data = rmnorm(n)
+  for (m in M){
+    runs  = 10
+    y_hat = matrix(nrow=length(xs), ncol=runs)
+    for(i in 1:runs) {
+      Fpost = dp_posterior(m, G0, data)
+      y_hat[,i] = ecdf(Fpost())(xs)    # just keeping values of cdf(xs), not the object
+    }
+    result(y_hat,f2,m,n,true_cdf)
+  }
+}
+```
+The result confirms conclusions derived above: a big value of M doesn't let the posterior mean fully explore the true data distribution. Although, with n big enough we can hit the true distribution even with big M.
+
+Thus, if we want to study the influence of $\mu$ and $\sigma^2$ it makes sense to use a small dataset (because with big one we will hit ecdf anyway) and reasonable M, which allow us to see different result having different prior. 
+
+Let's fix n = 20 and M = 5 and see what $\mu$ and $\sigma^2$ will give us the best solution. But firstly I will slightly rewrite the function for the resulting plots to print parameters of prior distribution instead of M and n and also the absolute difference between true cdf and the archived one. Here we will need more runs in order to achieve more or less stable result so the chunk will take some time to run:
+```{r}
+result_p = function(y_hat,true_func,m,s,true_cdf){
+  xs = seq(-3,3,len=15)
+  plot(xs, true_func(xs), type="n", ylim=c(-.1,1.1), col="blue", lwd=2, ylab="", xlab="",main =paste("m =",m,"sigma =",s, "score=",round(sum(abs(true_func(xs)-apply(y_hat,1,mean))),3)))
+  
+  # compute & plot 95% credible interval of the posterior
+  crebible_int <- apply(y_hat, 1, function(row) HPDinterval(as.mcmc(row), prob=0.95))
+  polygon(c(rev(xs), xs), c(rev(crebible_int[1,]), 
+                                crebible_int[2,]), col = 'grey90')    
+  
+  # plot the prior cdf
+  points(xs, true_cdf(xs), type="l", col="blue", lwd=2)
+  
+  # plot mean estimate of the posterior
+  means <- apply(y_hat, 1, mean)
+  points(xs, means, type="l", col="red", lwd=2)                  
+  
+  # plot true data generator
+  points(xs, true_func(xs), type="l", col="darkgreen", lwd=2)
+  legend("topleft",c("prior","posterior mean", "truth"), 
+         col=c("blue","red","darkgreen"), lwd=2, bty = "n") 
+}
+
+par(mfrow = c(3,2))
+mus = c(0,2,4)
+sigmas = c(1,2,4)
+data = rmnorm(20)
+runs  = 30
+for (m in mus){
+  for (s in sigmas){
+    true_cdf = function(x) pnorm(x,m,s)
+    g0 <- function(n) rnorm(n, m, s)    # the prior guess (in pdf format)
+    G0 <- DiscreteDistribution(g0(2e2)) # the prior guess (in cdf format)
+    y_hat = matrix(nrow=length(xs), ncol=runs)
+    for(i in 1:runs) {
+      Fpost = dp_posterior(5, G0, data)
+      y_hat[,i] = ecdf(Fpost())(xs)    # just keeping values of cdf(xs), not the object
+    }
+    result_p(y_hat,f2,m = m,s = s,true_cdf)
+  }
+}
+
+```
+
+Varying $\mu$ and $\sigma$ in this way we don't see much difference in the score, especially giving the fact that the process involves randomness the result is impossible to replicate.
+
+If we set more wide range for the parameters we pribably will be able to see bigger difference:
+```{r}
+
+par(mfrow = c(3,2))
+mus = c(-5,0,5)
+sigmas = c(1,7,15)
+data = rmnorm(20)
+runs  = 30
+for (m in mus){
+  for (s in sigmas){
+    true_cdf = function(x) pnorm(x,m,s)
+    g0 <- function(n) rnorm(n, m, s)    # the prior guess (in pdf format)
+    G0 <- DiscreteDistribution(g0(2e2)) # the prior guess (in cdf format)
+    y_hat = matrix(nrow=length(xs), ncol=runs)
+    for(i in 1:runs) {
+      Fpost = dp_posterior(5, G0, data)
+      y_hat[,i] = ecdf(Fpost())(xs)    # just keeping values of cdf(xs), not the object
+    }
+    result_p(y_hat,f2,m = m,s = s,true_cdf)
+  }
+}
+
+```
+
+Now we see the difference very clear: prior that has too different shape of CDF is pushing our posterior mean away from the true data distribution, while prior with roughly the same (although very roughly the same) hyperparameters gives us quite a good result.
+Let's pick the best and the worst fit and plot them together in order to see the difference more clear:
+```{r}
+par(mfrow = c(1,2))
+data = rmnorm(20)
+runs  = 30
+m = 2
+s = 2
+true_cdf = function(x) pnorm(x,m,s)
+g0 <- function(n) rnorm(n, m, s)    # the prior guess (in pdf format)
+G0 <- DiscreteDistribution(g0(2e2)) # the prior guess (in cdf format)
+y_hat = matrix(nrow=length(xs), ncol=runs)
+for(i in 1:runs) {
+  Fpost = dp_posterior(5, G0, data)
+  y_hat[,i] = ecdf(Fpost())(xs)    # just keeping values of cdf(xs), not the object
+}
+result_p(y_hat,f2,m = m,s = s,true_cdf)
+
+m = -5
+s = 15
+true_cdf = function(x) pnorm(x,m,s)
+g0 <- function(n) rnorm(n, m, s)    # the prior guess (in pdf format)
+G0 <- DiscreteDistribution(g0(2e2)) # the prior guess (in cdf format)
+y_hat = matrix(nrow=length(xs), ncol=runs)
+for(i in 1:runs) {
+  Fpost = dp_posterior(5, G0, data)
+  y_hat[,i] = ecdf(Fpost())(xs)    # just keeping values of cdf(xs), not the object
+}
+result_p(y_hat,f2,m = m,s = s,true_cdf)
+
+```
+
+We should also take into account that sensitivity of $\mu$ and $\sigma$ depends on M. With bigger M we would push the posterior to prior and hence the best result would be achived when prior is equal to the data distribution (and this doesnt seem like an interesting case). On the other hand, with smaller M we would risk to have too big variance and hence too big CI which would make our result not very precice.
